@@ -2,6 +2,7 @@
 
 confront the tough with toughness go away forever
 
+
 >本仓库内容，仅用于测试和学习研究，禁止用于商业用途，不得将其用于违反国家、地区、组织等的法律法规或相关规定的其他用途，否则后果自负
 ## 介绍
 
@@ -22,9 +23,7 @@ wget -N  http://raw.githubusercontent.com/sshpc/trident/main/run.sh && chmod +x 
 ## 示例
 
 ```sh
-                          ┌──►   
-─────────────────────#────┼────► 
-                          └──►   
+
 v: x.x
 
 当前菜单: 首页 

