@@ -2,7 +2,7 @@
 # Repository <https://github.com/sshpc/trident>
 export LANG=en_US.UTF-8
 
-selfversion='0.4'
+selfversion='0.4.1'
 datevar=$(date +%Y-%m-%d_%H:%M:%S)
 menuname='首页'
 parentfun=''
@@ -149,7 +149,10 @@ menutop() {
 # 菜单渲染
 menu() {
     menutop
-    source "$CONFIG_FILE" # 重新加载配置
+    # 如果文件存在重新加载配置
+    if [[ -f "$CONFIG_FILE" ]]; then
+        source "$CONFIG_FILE"
+    fi
 
     local options=("$@")
     local num_options=${#options[@]}
