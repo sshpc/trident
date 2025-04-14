@@ -3,7 +3,7 @@
 export LANG=en_US.UTF-8
 
 # 全局变量
-selfversion='0.5'
+selfversion='0.5.1'
 datevar=$(date +%Y-%m-%d_%H:%M:%S)
 menuname='首页'
 parentfun=''
@@ -50,7 +50,7 @@ waitinput() {
 }
 
 # 加载动画
-loading() {
+loadingbak() {
     local pids=("$@")
     local delay=0.1
     local spinstr='|/-\'
@@ -72,6 +72,106 @@ loading() {
 
     tput cnorm        # 恢复光标
     printf "\r\033[K" # 清除行
+}
+
+loading() {
+    local pids=("$@")
+    local delay=0.1
+    local spinstr='|/-\'
+    tput civis # 隐藏光标
+    local -A prev_cpu_idle prev_cpu_total
+
+    # 初始化CPU数据
+    while read -r line; do
+        if [[ $line =~ ^cpu([0-9]+)[[:space:]]+([0-9]+[[:space:]]+)+ ]]; then
+            local core="${BASH_REMATCH[1]}"
+            local values=(${line#* })
+            local idle=$((values[3] + values[4])) # idle + iowait
+            local total=0
+            for val in "${values[@]:0:8}"; do
+                ((total += val))
+            done
+            prev_cpu_idle["$core"]=$idle
+            prev_cpu_total["$core"]=$total
+        fi
+    done < /proc/stat
+
+    local last_update=$(date +%s)
+    printf "\n" # 为CPU信息预留空行
+
+    while :; do
+        local current_time=$(date +%s)
+        
+        # 每秒更新CPU和负载信息
+        if (( current_time - last_update >= 1 )); then
+            local -A current_cpu_idle current_cpu_total
+            while read -r line; do
+                if [[ $line =~ ^cpu([0-9]+)[[:space:]]+([0-9]+[[:space:]]+)+ ]]; then
+                    local core="${BASH_REMATCH[1]}"
+                    local values=(${line#* })
+                    local idle=$((values[3] + values[4]))
+                    local total=0
+                    for val in "${values[@]:0:8}"; do
+                        ((total += val))
+                    done
+                    current_cpu_idle["$core"]=$idle
+                    current_cpu_total["$core"]=$total
+                fi
+            done < /proc/stat
+
+            # 计算CPU使用率
+            local -A core_usage
+            for core in "${!current_cpu_idle[@]}"; do
+                if [[ -n "${prev_cpu_idle[$core]}" ]]; then
+                    local diff_idle=$((current_cpu_idle[$core] - prev_cpu_idle[$core]))
+                    local diff_total=$((current_cpu_total[$core] - prev_cpu_total[$core]))
+                    if (( diff_total > 0 )); then
+                        core_usage["$core"]=$(( (100 * (diff_total - diff_idle)) / diff_total ))
+                    else
+                        core_usage["$core"]=0
+                    fi
+                fi
+            done
+
+            # 更新历史数据
+            for core in "${!current_cpu_idle[@]}"; do
+                prev_cpu_idle["$core"]=${current_cpu_idle[$core]}
+                prev_cpu_total["$core"]=${current_cpu_total[$core]}
+            done
+
+            # 获取负载信息
+            read -r load1 load5 load15 _ < /proc/loadavg
+            local cpu_info="CPU:"
+            for core in $(printf "%s\n" "${!core_usage[@]}" | sort -n); do
+                cpu_info+=" [${core_usage[$core]}%]"
+            done
+            cpu_info+=" | Load: ${load1} ${load5} ${load15}"
+
+            # 更新CPU信息显示
+            printf "\033[A\r\033[K%s" "$cpu_info"
+            printf "\033[B" # 光标移回进度行
+            last_update=$current_time
+        fi
+
+        # 检查进程状态
+        local all_done=true
+        for pid in "${pids[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                all_done=false
+                break
+            fi
+        done
+        $all_done && break
+
+        # 更新旋转进度
+        printf "\r\033[0;36m[ %c ] 正在执行...\033[0m" "$spinstr"
+        spinstr=${spinstr:1}${spinstr:0:1}
+        sleep "$delay"
+    done
+
+    tput cnorm # 恢复光标
+    printf "\r\033[K"    # 清除进度行
+    printf "\033[A\r\033[K" # 清除CPU信息行
 }
 
 # 字符跳动效果
